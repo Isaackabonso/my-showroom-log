@@ -1,0 +1,1109 @@
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Car Parking Data Collector</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, addDoc, deleteDoc, onSnapshot, collection, query, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        window.firebase = { initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, getFirestore, doc, addDoc, deleteDoc, onSnapshot, collection, query, serverTimestamp };
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Chosen Palette: Warm Neutral (Stone, Sky, Emerald, Amber, Purple, Teal, Indigo, Green) -->
+    <!-- Application Structure Plan: A task-oriented dashboard. The top section displays key performance indicators (KPIs) for a quick overview. The main section is split into two parts: a user-friendly form for adding new vehicle logs and an interactive table displaying all current logs. A new section for Car Wash Operations Log is added below the main section to track daily car wash activities for accountability, now including client names. A further new section, "Monthly Car Wash Summary," is added to display aggregated monthly visit counts per car, enhancing accountability and theft prevention. A new "Car Wash Expense Tracker" section is introduced with a form for logging expenses, a table for recent expenses, and summary cards for weekly/monthly totals. Finally, a new bar chart visualizes Car Wash Revenue vs. Car Wash Expenses for profitability insights. This structure was chosen to transform the static log into a functional management tool, allowing users to not only view data but also to input new information and gain immediate insights through dynamic updates to stats and visuals, all on a single page, with clear separation of concerns for parking, car wash activities, and expenses. -->
+    <!-- Visualization & Content Choices:
+        - Report Info: Key financial metrics (total revenue, breakdown by source). Goal: Inform. Viz/Method: Large text KPI cards and a doughnut chart (Chart.js). Interaction: All metrics and the chart will update automatically when a car log is added or updated. Justification: Provides an immediate, high-level understanding of the business's performance.
+        - Report Info: List of parked cars and their associated fees. Goal: Organize & Interact. Viz/Method: An interactive HTML table. Interaction: Users can add new entries via a form and delete entries. Justification: This makes data management straightforward and intuitive.
+        - Report Info: Car wash activities for accountability. Goal: Inform & Track. Viz/Method: A new form for logging activities (now with client name) and a separate table to display them. Interaction: Users can log new wash activities with details like who performed the wash and for whom. Justification: Addresses the specific need for operational accountability and theft prevention for car wash services.
+        - Report Info: Monthly car wash visit counts per car. Goal: Inform & Track. Viz/Method: A new table displaying car plates and their monthly visit counts. Interaction: Automatically updates based on car wash log entries. Justification: Provides a clear, aggregated view of car wash frequency, aiding in accountability and identifying unusual patterns.
+        - Report Info: Car wash expenses (Genset Fuel, Car Shampoo, Car Sheen, Tire Polish). Goal: Track & Inform. Viz/Method: New form for logging expenses, table for recent expenses, and summary cards for weekly/monthly totals. Interaction: Users input expenses, and totals update dynamically. Justification: Provides granular control and oversight over car wash operational costs.
+        - Report Info: Car Wash Revenue vs. Car Wash Expenses. Goal: Compare & Analyze. Viz/Method: New Bar Chart (Chart.js). Interaction: Dynamically updates with new car wash activity and expense logs. Justification: Offers a direct visual comparison of profitability for the car wash segment, addressing the "offset against car wash revenue only" requirement.
+        - Report Info: Fees (Parking, Carwash types, Engine Wash, Carpet Wash, Sale, State Security). Goal: Compare. Viz/Method: Doughnut Chart (Chart.js). Interaction: The chart dynamically reflects the proportion of revenue from each source based on the data in the main car log table. Justification: Offers a clear, visual comparison of revenue streams, which is more impactful than raw numbers alone.
+    -->
+    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #fdfdfc;
+            color: #1f2937;
+        }
+        .chart-container {
+            position: relative;
+            width: 100%;
+            max-width: 450px;
+            margin-left: auto;
+            margin-right: auto;
+            height: 350px;
+            max-height: 400px;
+        }
+        .bar-chart-container { /* New container for the bar chart */
+            position: relative;
+            width: 100%;
+            max-width: 600px; /* Wider for bar chart readability */
+            margin-left: auto;
+            margin-right: auto;
+            height: 300px;
+            max-height: 350px;
+        }
+        @media (min-width: 768px) {
+            .chart-container {
+                height: 400px;
+            }
+            .bar-chart-container {
+                height: 350px;
+            }
+        }
+        .btn {
+            transition: all 0.3s ease;
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+        const { initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, getFirestore, collection, addDoc, deleteDoc, onSnapshot, query, serverTimestamp } = window.firebase;
+
+        // Global variables provided by the Canvas environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        const FEES = {
+            DAILY_PARKING: 20,
+            BASIC_CARWASH: 40,
+            SUV_CARWASH: 80,
+            SEDAN_CARWASH: 60,
+            FULL_ENGINE_WASH: 120,
+            CARPET_WASHING: 120,
+            SALE: 650,
+            STATE_SECURITY_MONTHLY: 750,
+            // Default unit costs for expenses (can be overridden in form)
+            GENSET_FUEL_UNIT_COST: 25, // Example default
+            CAR_SHAMPOO_UNIT_COST: 5, // Example default
+            CAR_SHEEN_UNIT_COST: 8, // Example default
+            TIRE_POLISH_UNIT_COST: 3, // Example default
+        };
+
+        const EXPENSE_TYPES = {
+            GENSET_FUEL: 'Genset Fuel',
+            CAR_SHAMPOO: 'Car Shampoo',
+            CAR_SHEEN: 'Car Sheen',
+            TIRE_POLISH: 'Tire Polish',
+        };
+
+        function App() {
+            const [carLogs, setCarLogs] = useState([]);
+            const [carWashActivities, setCarWashActivities] = useState([]);
+            const [carWashExpenses, setCarWashExpenses] = useState([]); // New state for expenses
+            const [db, setDb] = useState(null);
+            const [auth, setAuth] = useState(null);
+            const [userId, setUserId] = useState(null);
+            const [isAuthReady, setIsAuthReady] = useState(false);
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState(null);
+            const [monthlyWashCounts, setMonthlyWashCounts] = useState({});
+
+            useEffect(() => {
+                const initFirebase = async () => {
+                    try {
+                        const app = initializeApp(firebaseConfig);
+                        const firestore = getFirestore(app);
+                        const authInstance = getAuth(app);
+                        setDb(firestore);
+                        setAuth(authInstance);
+
+                        const unsubscribeAuth = onAuthStateChanged(authInstance, async (user) => {
+                            if (user) {
+                                setUserId(user.uid);
+                            } else {
+                                const anonymousUser = await signInAnonymously(authInstance);
+                                setUserId(anonymousUser.user.uid);
+                            }
+                            setIsAuthReady(true);
+                        });
+
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(authInstance, initialAuthToken);
+                        } else {
+                            await signInAnonymously(authInstance);
+                        }
+
+                        setLoading(false);
+                        return () => unsubscribeAuth();
+                    } catch (err) {
+                        console.error("Firebase initialization error:", err);
+                        setError("Failed to initialize the app. Please try again.");
+                        setLoading(false);
+                    }
+                };
+                initFirebase();
+            }, []);
+
+            useEffect(() => {
+                if (db && userId && isAuthReady) {
+                    const carLogsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/carLogs`);
+                    const qCarLogs = query(carLogsCollectionRef);
+
+                    const unsubscribeCarLogs = onSnapshot(qCarLogs, (snapshot) => {
+                        const logs = snapshot.docs.map(doc => ({
+                            id: doc.id,
+                            ...doc.data()
+                        }));
+                        setCarLogs(logs);
+                    }, (err) => {
+                        console.error("Error fetching car logs:", err);
+                        setError("Failed to load car logs. Please check your connection.");
+                    });
+
+                    const carWashActivitiesCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/carWashActivities`);
+                    const qCarWashActivities = query(carWashActivitiesCollectionRef);
+
+                    const unsubscribeCarWashActivities = onSnapshot(qCarWashActivities, (snapshot) => {
+                        const activities = snapshot.docs.map(doc => ({
+                            id: doc.id,
+                            ...doc.data()
+                        }));
+                        setCarWashActivities(activities);
+                    }, (err) => {
+                        console.error("Error fetching car wash activities:", err);
+                        setError("Failed to load car wash activities. Please check your connection.");
+                    });
+
+                    // New subscription for car wash expenses
+                    const carWashExpensesCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/carWashExpenses`);
+                    const qCarWashExpenses = query(carWashExpensesCollectionRef);
+
+                    const unsubscribeCarWashExpenses = onSnapshot(qCarWashExpenses, (snapshot) => {
+                        const expenses = snapshot.docs.map(doc => ({
+                            id: doc.id,
+                            ...doc.data()
+                        }));
+                        setCarWashExpenses(expenses);
+                    }, (err) => {
+                        console.error("Error fetching car wash expenses:", err);
+                        setError("Failed to load car wash expenses. Please check your connection.");
+                    });
+
+
+                    return () => {
+                        unsubscribeCarLogs();
+                        unsubscribeCarWashActivities();
+                        unsubscribeCarWashExpenses(); // Clean up expense listener
+                    };
+                }
+            }, [db, userId, isAuthReady]);
+
+            // Effect to calculate monthly wash counts
+            useEffect(() => {
+                const calculateMonthlyWashCounts = () => {
+                    const currentMonth = new Date().getMonth();
+                    const currentYear = new Date().getFullYear();
+                    const counts = {};
+
+                    carWashActivities.forEach(activity => {
+                        if (activity.washTimestamp) {
+                            const activityDate = activity.washTimestamp.toDate();
+                            if (activityDate.getMonth() === currentMonth && activityDate.getFullYear() === currentYear) {
+                                const plate = activity.carPlate.toUpperCase();
+                                counts[plate] = (counts[plate] || 0) + 1;
+                            }
+                        }
+                    });
+                    setMonthlyWashCounts(counts);
+                };
+
+                if (carWashActivities.length > 0 || Object.keys(monthlyWashCounts).length > 0) {
+                    calculateMonthlyWashCounts();
+                }
+            }, [carWashActivities]);
+
+
+            const addCarLog = async (newLog) => {
+                if (!db || !userId) {
+                    console.error("Firestore not initialized or user not authenticated.");
+                    return;
+                }
+                try {
+                    const carLogsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/carLogs`);
+                    await addDoc(carLogsCollectionRef, {
+                        ...newLog,
+                        timestamp: serverTimestamp()
+                    });
+                } catch (err) {
+                    console.error("Error adding document:", err);
+                    setError("Failed to add car log. Please try again.");
+                }
+            };
+
+            const deleteCarLog = async (id) => {
+                if (!db || !userId) {
+                    console.error("Firestore not initialized or user not authenticated.");
+                    return;
+                }
+                try {
+                    const carLogsCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/carLogs`);
+                    await deleteDoc(firebase.doc(carLogsCollectionRef, id));
+                } catch (err) {
+                    console.error("Error deleting document:", err);
+                    setError("Failed to delete car log. Please try again.");
+                }
+            };
+
+            const addCarWashActivity = async (newActivity) => {
+                if (!db || !userId) {
+                    console.error("Firestore not initialized or user not authenticated.");
+                    return;
+                }
+                try {
+                    const carWashActivitiesCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/carWashActivities`);
+                    await addDoc(carWashActivitiesCollectionRef, {
+                        ...newActivity,
+                        washTimestamp: serverTimestamp()
+                    });
+                } catch (err) {
+                    console.error("Error adding car wash activity:", err);
+                    setError("Failed to add car wash activity. Please try again.");
+                }
+            };
+
+            const deleteCarWashActivity = async (id) => {
+                if (!db || !userId) {
+                    console.error("Firestore not initialized or user not authenticated.");
+                    return;
+                }
+                try {
+                    const carWashActivitiesCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/carWashActivities`);
+                    await deleteDoc(firebase.doc(carWashActivitiesCollectionRef, id));
+                } catch (err) {
+                    console.error("Error deleting car wash activity:", err);
+                    setError("Failed to delete car wash activity. Please try again.");
+                }
+            };
+
+            // New functions for expenses
+            const addCarWashExpense = async (newExpense) => {
+                if (!db || !userId) {
+                    console.error("Firestore not initialized or user not authenticated.");
+                    return;
+                }
+                try {
+                    const carWashExpensesCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/carWashExpenses`);
+                    await addDoc(carWashExpensesCollectionRef, {
+                        ...newExpense,
+                        expenseTimestamp: serverTimestamp()
+                    });
+                } catch (err) {
+                    console.error("Error adding car wash expense:", err);
+                    setError("Failed to add car wash expense. Please try again.");
+                }
+            };
+
+            const deleteCarWashExpense = async (id) => {
+                if (!db || !userId) {
+                    console.error("Firestore not initialized or user not authenticated.");
+                    return;
+                }
+                try {
+                    const carWashExpensesCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/carWashExpenses`);
+                    await deleteDoc(firebase.doc(carWashExpensesCollectionRef, id));
+                } catch (err) {
+                    console.error("Error deleting car wash expense:", err);
+                    setError("Failed to delete car wash expense. Please try again.");
+                }
+            };
+
+
+            if (loading) {
+                return (
+                    <div className="flex items-center justify-center min-h-screen bg-stone-50">
+                        <div className="text-xl text-stone-600">Loading application...</div>
+                    </div>
+                );
+            }
+
+            if (error) {
+                return (
+                    <div className="flex items-center justify-center min-h-screen bg-red-50">
+                        <div className="text-xl text-red-700 p-4 rounded-lg bg-red-100 shadow-md">{error}</div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="container mx-auto p-4 sm:p-6 lg:p-8">
+                    <header className="text-center mb-8">
+                        <h1 className="text-4xl font-bold text-stone-700">Car Showroom Dashboard</h1>
+                        <p className="text-stone-500 mt-2">Hey there! Use this dashboard to keep tabs on all the awesome cars at the showroom.</p>
+                        {userId && (
+                            <p className="text-xs text-stone-400 mt-2">Your User ID: {userId}</p>
+                        )}
+                    </header>
+
+                    <DashboardStats carLogs={carLogs} />
+
+                    <main className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                        <DataCollectionForm addCarLog={addCarLog} />
+                        <CarLogTable carLogs={carLogs} deleteCarLog={deleteCarLog} />
+                    </main>
+
+                    <section id="car-wash-operations-section" className="mt-8 bg-white p-6 rounded-xl shadow-md border border-stone-200">
+                        <h2 className="text-2xl font-bold mb-4 text-stone-700 text-center">Car Wash Operations Log</h2>
+                        <p className="text-stone-500 mb-6 text-center">Log daily car wash activities here for accountability and tracking. This helps ensure all services are recorded.</p>
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                            <CarWashLogForm addCarWashActivity={addCarWashActivity} />
+                            <CarWashLogTable carWashActivities={carWashActivities} deleteCarWashActivity={deleteCarWashActivity} />
+                        </div>
+                    </section>
+
+                    <section id="monthly-car-wash-summary-section" className="mt-8 bg-white p-6 rounded-xl shadow-md border border-stone-200">
+                        <h2 className="text-2xl font-bold mb-4 text-stone-700 text-center">Monthly Car Wash Summary</h2>
+                        <p className="text-stone-500 mb-6 text-center">See how many times each car has visited the car wash this month.</p>
+                        <MonthlyCarWashSummary monthlyWashCounts={monthlyWashCounts} />
+                    </section>
+
+                    {/* New Car Wash Expense Tracker Section */}
+                    <section id="car-wash-expense-tracker-section" className="mt-8 bg-white p-6 rounded-xl shadow-md border border-stone-200">
+                        <h2 className="text-2xl font-bold mb-4 text-stone-700 text-center">Car Wash Expense Tracker</h2>
+                        <p className="text-stone-500 mb-6 text-center">Keep track of your car wash operational expenses here.</p>
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                            <CarWashExpenseForm addCarWashExpense={addCarWashExpense} />
+                            <CarWashExpenseTable carWashExpenses={carWashExpenses} deleteCarWashExpense={deleteCarWashExpense} />
+                        </div>
+                        <CarWashExpenseSummary carWashExpenses={carWashExpenses} />
+                        <CarWashProfitChart carLogs={carLogs} carWashExpenses={carWashExpenses} />
+                    </section>
+
+                    <RevenueChart carLogs={carLogs} />
+                </div>
+            );
+        }
+
+        function DashboardStats({ carLogs }) {
+            const totalRevenue = carLogs.reduce((sum, log) => {
+                let logTotal = 0;
+                if (log.stateSecurity) {
+                    logTotal += FEES.STATE_SECURITY_MONTHLY;
+                } else {
+                    logTotal += log.daysParked * FEES.DAILY_PARKING;
+                }
+                if (log.selectedCarwashType === 'basic') logTotal += FEES.BASIC_CARWASH;
+                if (log.selectedCarwashType === 'suv') logTotal += FEES.SUV_CARWASH;
+                if (log.selectedCarwashType === 'sedan') logTotal += FEES.SEDAN_CARWASH;
+                if (log.fullEngineWash) logTotal += FEES.FULL_ENGINE_WASH;
+                if (log.carpetWashing) logTotal += FEES.CARPET_WASHING;
+                if (log.sold) logTotal += FEES.SALE;
+                return sum + logTotal;
+            }, 0);
+
+            const servicesRendered = carLogs.filter(log => log.selectedCarwashType !== 'none' || log.fullEngineWash || log.carpetWashing).length;
+
+            return (
+                <section id="stats-section" className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                    <div className="bg-white p-6 rounded-xl shadow-md border border-stone-200 text-center">
+                        <h3 className="text-lg font-semibold text-stone-500">Total Estimated Revenue</h3>
+                        <p id="total-revenue" className="text-3xl font-bold text-emerald-600 mt-2">K{totalRevenue.toFixed(2)}</p>
+                    </div>
+                    <div className="bg-white p-6 rounded-xl shadow-md border border-stone-200 text-center">
+                        <h3 className="text-lg font-semibold text-stone-500">Cars Currently on Lot</h3>
+                        <p id="cars-on-lot" className="text-3xl font-bold text-sky-600 mt-2">{carLogs.length}</p>
+                    </div>
+                    <div className="bg-white p-6 rounded-xl shadow-md border border-stone-200 text-center">
+                        <h3 className="text-lg font-semibold text-stone-500">Services Rendered (Carwash)</h3>
+                        <p id="services-rendered" className="text-3xl font-bold text-amber-600 mt-2">{servicesRendered}</p>
+                    </div>
+                </section>
+            );
+        }
+
+        function DataCollectionForm({ addCarLog }) {
+            const [carMake, setCarMake] = useState('');
+            const [licensePlate, setLicensePlate] = useState('');
+            const [ownerName, setOwnerName] = useState('');
+            const [daysParked, setDaysParked] = useState('');
+            const [isSold, setIsSold] = useState(false);
+            const [stateSecurity, setStateSecurity] = useState(false);
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                if (!carMake || !licensePlate || !ownerName || daysParked === '') {
+                    console.error("All fields are required.");
+                    return;
+                }
+                const newLog = {
+                    make: carMake,
+                    plate: licensePlate,
+                    owner: ownerName,
+                    daysParked: parseInt(daysParked, 10),
+                    sold: isSold,
+                    stateSecurity: stateSecurity
+                };
+                addCarLog(newLog);
+                setCarMake('');
+                setLicensePlate('');
+                setOwnerName('');
+                setDaysParked('');
+                setIsSold(false);
+                setStateSecurity(false);
+            };
+
+            return (
+                <div className="lg:col-span-1 bg-white p-6 rounded-xl shadow-md border border-stone-200">
+                    <h2 className="text-2xl font-bold mb-4 text-stone-700">Log a New Vehicle</h2>
+                    <p className="text-stone-500 mb-6">Fill out the details below to add a new car to the log. All fields are required to ensure accurate tracking.</p>
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <input type="text" value={carMake} onChange={(e) => setCarMake(e.target.value)} placeholder="Car Make & Model (e.g., Toyota Hilux)" className="w-full p-3 bg-stone-100 rounded-lg border border-stone-300 focus:outline-none focus:ring-2 focus:ring-sky-500" required />
+                        <input type="text" value={licensePlate} onChange={(e) => setLicensePlate(e.target.value)} placeholder="License Plate" className="w-full p-3 bg-stone-100 rounded-lg border border-stone-300 focus:outline-none focus:ring-2 focus:ring-sky-500" required />
+                        <input type="text" value={ownerName} onChange={(e) => setOwnerName(e.target.value)} placeholder="Owner/Client Name" className="w-full p-3 bg-stone-100 rounded-lg border border-stone-300 focus:outline-none focus:ring-2 focus:ring-sky-500" required />
+                        <div>
+                            <label htmlFor="days-parked" className="block text-sm font-medium text-stone-600 mb-1">Days Parked</label>
+                            <input type="number" value={daysParked} onChange={(e) => setDaysParked(e.target.value)} placeholder="Number of days" className="w-full p-3 bg-stone-100 rounded-lg border border-stone-300 focus:outline-none focus:ring-2 focus:ring-sky-500" min="0" required />
+                        </div>
+                        
+                        <div className="flex items-center space-x-4">
+                            <div className="flex items-center">
+                                <input type="checkbox" checked={isSold} onChange={(e) => setIsSold(e.target.checked)} id="is-sold" className="h-5 w-5 rounded border-stone-300 text-emerald-600 focus:ring-emerald-500" />
+                                <label htmlFor="is-sold" className="ml-2 text-stone-700">Sold? (K650)</label>
+                            </div>
+                            <div className="flex items-center">
+                                <input type="checkbox" checked={stateSecurity} onChange={(e) => setStateSecurity(e.target.checked)} id="state-security" className="h-5 w-5 rounded border-stone-300 text-purple-600 focus:ring-purple-500" />
+                                <label htmlFor="state-security" className="ml-2 text-stone-700">State Security? (K750/month, no daily fee)</label>
+                            </div>
+                        </div>
+                        <button type="submit" className="w-full bg-sky-600 text-white font-bold py-3 px-4 rounded-lg btn">Add Vehicle to Log</button>
+                    </form>
+                </div>
+            );
+        }
+
+        function CarLogTable({ carLogs, deleteCarLog }) {
+            const calculateRowTotal = (log) => {
+                let total = 0;
+                // Parking Charges Logic
+                if (log.stateSecurity) {
+                    total += FEES.STATE_SECURITY_MONTHLY;
+                } else {
+                    total += log.daysParked * FEES.DAILY_PARKING;
+                }
+
+                // Carwash Services (these properties might exist from older logs, but won't be set by new DataCollectionForm entries)
+                if (log.selectedCarwashType === 'basic') total += FEES.BASIC_CARWASH;
+                if (log.selectedCarwashType === 'suv') total += FEES.SUV_CARWASH;
+                if (log.selectedCarwashType === 'sedan') total += FEES.SEDAN_CARWASH;
+                if (log.fullEngineWash) total += FEES.FULL_ENGINE_WASH;
+                if (log.carpetWashing) total += FEES.CARPET_WASHING;
+
+                // Sale Charge
+                if (log.sold) total += FEES.SALE;
+                return total;
+            };
+
+            return (
+                <div className="lg:col-span-2 bg-white p-6 rounded-xl shadow-md border border-stone-200">
+                     <h2 className="text-2xl font-bold mb-4 text-stone-700">Vehicle Log</h2>
+                     <p className="text-stone-500 mb-6">This table shows all vehicles currently logged on the premises. You can remove a vehicle once it has departed and all fees are settled.</p>
+                    <div className="overflow-x-auto">
+                        <table className="min-w-full divide-y divide-stone-200">
+                            <thead className="bg-stone-100">
+                                <tr>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-stone-500 uppercase tracking-wider">Vehicle</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-stone-500 uppercase tracking-wider">Owner</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-stone-500 uppercase tracking-wider">Fees</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-stone-500 uppercase tracking-wider">Total</th>
+                                    <th className="px-6 py-3 text-right text-xs font-medium text-stone-500 uppercase tracking-wider">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody className="bg-white divide-y divide-stone-200">
+                                {carLogs.length === 0 ? (
+                                    <tr>
+                                        <td colSpan="5" className="text-center py-10 text-stone-500">No vehicles logged yet. Add one using the form!</td>
+                                    </tr>
+                                ) : (
+                                    carLogs.map((log) => (
+                                        <tr key={log.id}>
+                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                <div className="text-sm font-semibold text-stone-900">{log.make}</div>
+                                                <div className="text-sm text-stone-500">{log.plate}</div>
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                <div className="text-sm text-stone-900">{log.owner}</div>
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-stone-700">
+                                                {log.stateSecurity ? (
+                                                    <div>State Security: K{FEES.STATE_SECURITY_MONTHLY}</div>
+                                                ) : (
+                                                    <div>Parking: K{log.daysParked * FEES.DAILY_PARKING} ({log.daysParked} days)</div>
+                                                )}
+                                                {log.selectedCarwashType !== 'none' && <div>{log.selectedCarwashType === 'basic' && `Basic Wash: K${FEES.BASIC_CARWASH}`}
+                                                                                          {log.selectedCarwashType === 'suv' && `SUV Wash: K${FEES.SUV_CARWASH}`}
+                                                                                          {log.selectedCarwashType === 'sedan' && `Sedan Wash: K${FEES.SEDAN_CARWASH}`}</div>}
+                                                {log.fullEngineWash && <div>Engine Wash: K{FEES.FULL_ENGINE_WASH}</div>}
+                                                {log.carpetWashing && <div>Carpet Wash: K{FEES.CARPET_WASHING}</div>}
+                                                {log.sold && <div>Sale: K{FEES.SALE}</div>}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-emerald-600">K{calculateRowTotal(log).toFixed(2)}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                                <button onClick={() => deleteCarLog(log.id)} className="text-red-600 hover:text-red-900 btn">Delete</button>
+                                            </td>
+                                        </tr>
+                                    ))
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            );
+        }
+
+        function CarWashLogForm({ addCarWashActivity }) {
+            const [carPlate, setCarPlate] = useState('');
+            const [clientName, setClientName] = useState('');
+            const [selectedCarwashType, setSelectedCarwashType] = useState('none');
+            const [fullEngineWash, setFullEngineWash] = useState(false);
+            const [carpetWashing, setCarpetWashing] = useState(false);
+            const [washedBy, setWashedBy] = useState('');
+            const [notes, setNotes] = useState('');
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                if (!carPlate || !clientName || !washedBy || (selectedCarwashType === 'none' && !fullEngineWash && !carpetWashing)) {
+                    console.error("License Plate, Client Name, Washed By, and at least one service are required.");
+                    return;
+                }
+
+                const newActivity = {
+                    carPlate,
+                    clientName,
+                    selectedCarwashType,
+                    fullEngineWash,
+                    carpetWashing,
+                    washedBy,
+                    notes,
+                };
+                addCarWashActivity(newActivity);
+                setCarPlate('');
+                setClientName('');
+                setSelectedCarwashType('none');
+                setFullEngineWash(false);
+                setCarpetWashing(false);
+                setWashedBy('');
+                setNotes('');
+            };
+
+            return (
+                <div className="bg-white p-6 rounded-xl shadow-md border border-stone-200 lg:col-span-1">
+                    <h3 className="text-xl font-bold mb-4 text-stone-700">Log a New Wash Activity</h3>
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <input type="text" value={carPlate} onChange={(e) => setCarPlate(e.target.value)} placeholder="Car License Plate" className="w-full p-3 bg-stone-100 rounded-lg border border-stone-300 focus:outline-none focus:ring-2 focus:ring-sky-500" required />
+                        <input type="text" value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="Client Name" className="w-full p-3 bg-stone-100 rounded-lg border border-stone-300 focus:outline-none focus:ring-2 focus:ring-sky-500" required />
+                        
+                        <div>
+                            <label htmlFor="wash-type" className="block text-sm font-medium text-stone-600 mb-1">Exterior Carwash Type</label>
+                            <select value={selectedCarwashType} onChange={(e) => setSelectedCarwashType(e.target.value)} id="wash-type" className="w-full p-3 bg-stone-100 rounded-lg border border-stone-300 focus:outline-none focus:ring-2 focus:ring-sky-500">
+                                <option value="none">No Exterior Wash</option>
+                                <option value="basic">Basic Wash</option>
+                                <option value="suv">SUV Wash</option>
+                                <option value="sedan">Sedan Wash</option>
+                            </select>
+                        </div>
+
+                        <div className="flex items-center space-x-4">
+                            <div className="flex items-center">
+                                <input type="checkbox" checked={fullEngineWash} onChange={(e) => setFullEngineWash(e.target.checked)} id="wash-engine" className="h-5 w-5 rounded border-stone-300 text-teal-600 focus:ring-teal-500" />
+                                <label htmlFor="wash-engine" className="ml-2 text-stone-700">Full Engine Wash</label>
+                            </div>
+                            <div className="flex items-center">
+                                <input type="checkbox" checked={carpetWashing} onChange={(e) => setCarpetWashing(e.target.checked)} id="wash-carpet" className="h-5 w-5 rounded border-stone-300 text-indigo-600 focus:ring-indigo-500" />
+                                <label htmlFor="wash-carpet" className="ml-2 text-stone-700">Carpet Washing</label>
+                            </div>
+                        </div>
+
+                        <input type="text" value={washedBy} onChange={(e) => setWashedBy(e.target.value)} placeholder="Washed By (Staff Name)" className="w-full p-3 bg-stone-100 rounded-lg border border-stone-300 focus:outline-none focus:ring-2 focus:ring-sky-500" required />
+                        <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Any additional notes (e.g., specific issues, client feedback)" rows="3" className="w-full p-3 bg-stone-100 rounded-lg border border-stone-300 focus:outline-none focus:ring-2 focus:ring-sky-500"></textarea>
+                        
+                        <button type="submit" className="w-full bg-emerald-600 text-white font-bold py-3 px-4 rounded-lg btn">Log Car Wash</button>
+                    </form>
+                </div>
+            );
+        }
+
+        function CarWashLogTable({ carWashActivities, deleteCarWashActivity }) {
+            return (
+                <div className="bg-white p-6 rounded-xl shadow-md border border-stone-200 lg:col-span-1">
+                    <h3 className="text-xl font-bold mb-4 text-stone-700">Recent Wash Activities</h3>
+                    <div className="overflow-x-auto">
+                        <table className="min-w-full divide-y divide-stone-200">
+                            <thead className="bg-stone-100">
+                                <tr>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-stone-500 uppercase tracking-wider">Date/Time</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-stone-500 uppercase tracking-wider">Plate</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-stone-500 uppercase tracking-wider">Client</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-stone-500 uppercase tracking-wider">Services</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-stone-500 uppercase tracking-wider">Washed By</th>
+                                    <th className="px-6 py-3 text-right text-xs font-medium text-stone-500 uppercase tracking-wider">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody className="bg-white divide-y divide-stone-200">
+                                {carWashActivities.length === 0 ? (
+                                    <tr>
+                                        <td colSpan="6" className="text-center py-10 text-stone-500">No car wash activities logged yet.</td>
+                                    </tr>
+                                ) : (
+                                    carWashActivities.map((activity) => (
+                                        <tr key={activity.id}>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-stone-700">
+                                                {activity.washTimestamp ? new Date(activity.washTimestamp.toDate()).toLocaleString() : 'N/A'}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-stone-900">
+                                                {activity.carPlate}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-stone-700">
+                                                {activity.clientName}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-stone-700">
+                                                {activity.selectedCarwashType !== 'none' && <div>{activity.selectedCarwashType.charAt(0).toUpperCase() + activity.selectedCarwashType.slice(1)} Wash</div>}
+                                                {activity.fullEngineWash && <div>Engine Wash</div>}
+                                                {activity.carpetWashing && <div>Carpet Wash</div>}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-stone-900">
+                                                {activity.washedBy}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                                <button onClick={() => deleteCarWashActivity(activity.id)} className="text-red-600 hover:text-red-900 btn">Delete</button>
+                                            </td>
+                                        </tr>
+                                    ))
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            );
+        }
+
+        function MonthlyCarWashSummary({ monthlyWashCounts }) {
+            const currentMonthName = new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' });
+            const hasData = Object.keys(monthlyWashCounts).length > 0;
+
+            return (
+                <div className="bg-white p-6 rounded-xl shadow-md border border-stone-200">
+                    <h3 className="text-xl font-bold mb-4 text-stone-700">Visits for {currentMonthName}</h3>
+                    <div className="overflow-x-auto">
+                        <table className="min-w-full divide-y divide-stone-200">
+                            <thead className="bg-stone-100">
+                                <tr>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-stone-500 uppercase tracking-wider">License Plate</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-stone-500 uppercase tracking-wider">Wash Count</th>
+                                </tr>
+                            </thead>
+                            <tbody className="bg-white divide-y divide-stone-200">
+                                {!hasData ? (
+                                    <tr>
+                                        <td colSpan="2" className="text-center py-10 text-stone-500">No car wash visits logged this month yet.</td>
+                                    </tr>
+                                ) : (
+                                    Object.entries(monthlyWashCounts).map(([plate, count]) => (
+                                        <tr key={plate}>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-stone-900">{plate}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-stone-700">{count}</td>
+                                        </tr>
+                                    ))
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            );
+        }
+
+        function CarWashExpenseForm({ addCarWashExpense }) {
+            const [expenseType, setExpenseType] = useState(EXPENSE_TYPES.GENSET_FUEL);
+            const [quantity, setQuantity] = useState('');
+            const [unitCost, setUnitCost] = useState('');
+            const [notes, setNotes] = useState('');
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                if (!expenseType || quantity === '' || unitCost === '') {
+                    console.error("Expense Type, Quantity, and Unit Cost are required.");
+                    return;
+                }
+
+                const newExpense = {
+                    expenseType,
+                    quantity: parseFloat(quantity),
+                    unitCost: parseFloat(unitCost),
+                    totalCost: parseFloat(quantity) * parseFloat(unitCost),
+                    notes,
+                };
+                addCarWashExpense(newExpense);
+                setExpenseType(EXPENSE_TYPES.GENSET_FUEL);
+                setQuantity('');
+                setUnitCost('');
+                setNotes('');
+            };
+
+            return (
+                <div className="bg-white p-6 rounded-xl shadow-md border border-stone-200 lg:col-span-1">
+                    <h3 className="text-xl font-bold mb-4 text-stone-700">Log a New Expense</h3>
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <label htmlFor="expense-type" className="block text-sm font-medium text-stone-600 mb-1">Expense Type</label>
+                            <select value={expenseType} onChange={(e) => setExpenseType(e.target.value)} id="expense-type" className="w-full p-3 bg-stone-100 rounded-lg border border-stone-300 focus:outline-none focus:ring-2 focus:ring-sky-500">
+                                {Object.values(EXPENSE_TYPES).map(type => (
+                                    <option key={type} value={type}>{type}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <input type="number" value={quantity} onChange={(e) => setQuantity(e.target.value)} placeholder="Quantity (e.g., Liters, Units)" className="w-full p-3 bg-stone-100 rounded-lg border border-stone-300 focus:outline-none focus:ring-2 focus:ring-sky-500" min="0" step="0.01" required />
+                        <input type="number" value={unitCost} onChange={(e) => setUnitCost(e.target.value)} placeholder="Unit Cost (K)" className="w-full p-3 bg-stone-100 rounded-lg border border-stone-300 focus:outline-none focus:ring-2 focus:ring-sky-500" min="0" step="0.01" required />
+                        <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Any notes about this expense" rows="2" className="w-full p-3 bg-stone-100 rounded-lg border border-stone-300 focus:outline-none focus:ring-2 focus:ring-sky-500"></textarea>
+                        <button type="submit" className="w-full bg-orange-600 text-white font-bold py-3 px-4 rounded-lg btn">Add Expense</button>
+                    </form>
+                </div>
+            );
+        }
+
+        function CarWashExpenseTable({ carWashExpenses, deleteCarWashExpense }) {
+            return (
+                <div className="bg-white p-6 rounded-xl shadow-md border border-stone-200 lg:col-span-1">
+                    <h3 className="text-xl font-bold mb-4 text-stone-700">Recent Expenses</h3>
+                    <div className="overflow-x-auto">
+                        <table className="min-w-full divide-y divide-stone-200">
+                            <thead className="bg-stone-100">
+                                <tr>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-stone-500 uppercase tracking-wider">Date</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-stone-500 uppercase tracking-wider">Type</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-stone-500 uppercase tracking-wider">Qty</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-stone-500 uppercase tracking-wider">Unit Cost</th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-stone-500 uppercase tracking-wider">Total</th>
+                                    <th className="px-6 py-3 text-right text-xs font-medium text-stone-500 uppercase tracking-wider">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody className="bg-white divide-y divide-stone-200">
+                                {carWashExpenses.length === 0 ? (
+                                    <tr>
+                                        <td colSpan="6" className="text-center py-10 text-stone-500">No expenses logged yet.</td>
+                                    </tr>
+                                ) : (
+                                    carWashExpenses.map((expense) => (
+                                        <tr key={expense.id}>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-stone-700">
+                                                {expense.expenseTimestamp ? new Date(expense.expenseTimestamp.toDate()).toLocaleDateString() : 'N/A'}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-stone-900">
+                                                {expense.expenseType}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-stone-700">
+                                                {expense.quantity}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-stone-700">
+                                                K{expense.unitCost.toFixed(2)}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-red-600">
+                                                K{expense.totalCost.toFixed(2)}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                                <button onClick={() => deleteCarWashExpense(expense.id)} className="text-red-600 hover:text-red-900 btn">Delete</button>
+                                            </td>
+                                        </tr>
+                                    ))
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            );
+        }
+
+        function CarWashExpenseSummary({ carWashExpenses }) {
+            const getWeekNumber = (d) => {
+                d = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+                d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+                const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+                const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+                return weekNo;
+            };
+
+            const today = new Date();
+            const currentWeekNo = getWeekNumber(today);
+            const currentMonth = today.getMonth();
+            const currentYear = today.getFullYear();
+
+            const weeklyTotals = {};
+            const monthlyTotals = {};
+            const overallTotals = {};
+
+            Object.values(EXPENSE_TYPES).forEach(type => {
+                weeklyTotals[type] = 0;
+                monthlyTotals[type] = 0;
+                overallTotals[type] = 0;
+            });
+
+            carWashExpenses.forEach(expense => {
+                if (expense.expenseTimestamp) {
+                    const expenseDate = expense.expenseTimestamp.toDate();
+                    const expenseWeekNo = getWeekNumber(expenseDate);
+                    const expenseMonth = expenseDate.getMonth();
+                    const expenseYear = expenseDate.getFullYear();
+
+                    overallTotals[expense.expenseType] += expense.totalCost;
+
+                    if (expenseYear === currentYear && expenseWeekNo === currentWeekNo) {
+                        weeklyTotals[expense.expenseType] += expense.totalCost;
+                    }
+                    if (expenseYear === currentYear && expenseMonth === currentMonth) {
+                        monthlyTotals[expense.expenseType] += expense.totalCost;
+                    }
+                }
+            });
+
+            return (
+                <div className="mt-8 bg-white p-6 rounded-xl shadow-md border border-stone-200">
+                    <h3 className="text-xl font-bold mb-4 text-stone-700">Expense Summary</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        {Object.values(EXPENSE_TYPES).map(type => (
+                            <div key={type} className="bg-stone-50 p-4 rounded-lg border border-stone-200">
+                                <p className="text-sm font-semibold text-stone-600">{type}</p>
+                                <p className="text-lg font-bold text-red-600 mt-1">Overall: K{overallTotals[type].toFixed(2)}</p>
+                                <p className="text-sm text-stone-500">Weekly: K{weeklyTotals[type].toFixed(2)}</p>
+                                <p className="text-sm text-stone-500">Monthly: K{monthlyTotals[type].toFixed(2)}</p>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        }
+
+        function CarWashProfitChart({ carLogs, carWashExpenses }) {
+            const chartRef = useRef(null);
+            const chartInstanceRef = useRef(null);
+
+            useEffect(() => {
+                // Calculate total car wash revenue from carLogs
+                const totalCarWashRevenue = carLogs.reduce((sum, log) => {
+                    let washRevenue = 0;
+                    if (log.selectedCarwashType === 'basic') washRevenue += FEES.BASIC_CARWASH;
+                    if (log.selectedCarwashType === 'suv') washRevenue += FEES.SUV_CARWASH;
+                    if (log.selectedCarwashType === 'sedan') washRevenue += FEES.SEDAN_CARWASH;
+                    if (log.fullEngineWash) washRevenue += FEES.FULL_ENGINE_WASH;
+                    if (log.carpetWashing) washRevenue += FEES.CARPET_WASHING;
+                    return sum + washRevenue;
+                }, 0);
+
+                // Calculate total car wash expenses
+                const totalCarWashExpenses = carWashExpenses.reduce((sum, expense) => sum + expense.totalCost, 0);
+
+                const data = {
+                    labels: ['Car Wash Revenue', 'Car Wash Expenses'],
+                    datasets: [
+                        {
+                            label: 'Amount (K)',
+                            data: [totalCarWashRevenue, totalCarWashExpenses],
+                            backgroundColor: [
+                                'rgba(16, 185, 129, 0.8)', // Emerald for Revenue
+                                'rgba(239, 68, 68, 0.8)'   // Red for Expenses
+                            ],
+                            borderColor: [
+                                'rgba(16, 185, 129, 1)',
+                                'rgba(239, 68, 68, 1)'
+                            ],
+                            borderWidth: 1
+                        }
+                    ]
+                };
+
+                if (chartInstanceRef.current) {
+                    chartInstanceRef.current.data = data;
+                    chartInstanceRef.current.update();
+                } else {
+                    const ctx = chartRef.current.getContext('2d');
+                    chartInstanceRef.current = new Chart(ctx, {
+                        type: 'bar',
+                        data: data,
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: {
+                                    display: false // Hide legend as labels are clear
+                                },
+                                tooltip: {
+                                    callbacks: {
+                                        label: function(context) {
+                                            let label = context.dataset.label || '';
+                                            if (label) {
+                                                label += ': ';
+                                            }
+                                            if (context.parsed.y !== null) {
+                                                label += new Intl.NumberFormat('en-US', { style: 'currency', currency: 'ZMW' }).format(context.parsed.y);
+                                            }
+                                            return label;
+                                        }
+                                    }
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    title: {
+                                        display: true,
+                                        text: 'Amount (K)'
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+            }, [carLogs, carWashExpenses]);
+
+            return (
+                <div className="mt-8 bg-white p-6 rounded-xl shadow-md border border-stone-200">
+                    <h3 className="text-xl font-bold mb-4 text-stone-700 text-center">Car Wash Profitability</h3>
+                    <p className="text-stone-500 text-center mb-6">Compare your total car wash revenue against your operational expenses.</p>
+                    <div className="bar-chart-container">
+                        <canvas ref={chartRef} id="carWashProfitChart"></canvas>
+                    </div>
+                </div>
+            );
+        }
+
+
+        function RevenueChart({ carLogs }) {
+            const chartRef = useRef(null);
+            const chartInstanceRef = useRef(null);
+
+            useEffect(() => {
+                const parkingRevenue = carLogs.reduce((sum, log) => {
+                    if (log.stateSecurity) {
+                        return sum;
+                    } else {
+                        return sum + (log.daysParked * FEES.DAILY_PARKING);
+                    }
+                }, 0);
+                const basicCarwashRevenue = carLogs.reduce((sum, log) => sum + (log.selectedCarwashType === 'basic' ? FEES.BASIC_CARWASH : 0), 0);
+                const suvCarwashRevenue = carLogs.reduce((sum, log) => sum + (log.selectedCarwashType === 'suv' ? FEES.SUV_CARWASH : 0), 0);
+                const sedanCarwashRevenue = carLogs.reduce((sum, log) => sum + (log.selectedCarwashType === 'sedan' ? FEES.SEDAN_CARWASH : 0), 0);
+                const fullEngineWashRevenue = carLogs.reduce((sum, log) => sum + (log.fullEngineWash ? FEES.FULL_ENGINE_WASH : 0), 0);
+                const carpetWashingRevenue = carLogs.reduce((sum, log) => sum + (log.carpetWashing ? FEES.CARPET_WASHING : 0), 0);
+                const saleRevenue = carLogs.reduce((sum, log) => sum + (log.sold ? FEES.SALE : 0), 0);
+                const stateSecurityRevenue = carLogs.reduce((sum, log) => sum + (log.stateSecurity ? FEES.STATE_SECURITY_MONTHLY : 0), 0);
+
+                const data = [
+                    parkingRevenue,
+                    basicCarwashRevenue,
+                    suvCarwashRevenue,
+                    sedanCarwashRevenue,
+                    fullEngineWashRevenue,
+                    carpetWashingRevenue,
+                    saleRevenue,
+                    stateSecurityRevenue
+                ];
+
+                if (chartInstanceRef.current) {
+                    chartInstanceRef.current.data.datasets[0].data = data;
+                    chartInstanceRef.current.update();
+                } else {
+                    const ctx = chartRef.current.getContext('2d');
+                    chartInstanceRef.current = new Chart(ctx, {
+                        type: 'doughnut',
+                        data: {
+                            labels: [
+                                'Parking Fees',
+                                'Basic Wash Fees',
+                                'SUV Wash Fees',
+                                'Sedan Wash Fees',
+                                'Engine Wash Fees',
+                                'Carpet Wash Fees',
+                                'Sale Charges',
+                                'State Security Fees'
+                            ],
+                            datasets: [{
+                                label: 'Revenue Source',
+                                data: data,
+                                backgroundColor: [
+                                    'rgba(59, 130, 246, 0.8)', // sky-500 (Parking)
+                                    'rgba(251, 191, 36, 0.8)', // amber-400 (Basic Wash)
+                                    'rgba(249, 115, 22, 0.8)', // orange-500 (SUV Wash)
+                                    'rgba(234, 88, 12, 0.8)',  // orange-600 (Sedan Wash)
+                                    'rgba(20, 184, 166, 0.8)', // teal-500 (Engine Wash)
+                                    'rgba(99, 102, 241, 0.8)', // indigo-500 (Carpet Wash)
+                                    'rgba(16, 185, 129, 0.8)',  // emerald-500 (Sale)
+                                    'rgba(124, 58, 237, 0.8)' // purple-600 (State Security)
+                                ],
+                                borderColor: [
+                                    'rgba(59, 130, 246, 1)',
+                                    'rgba(251, 191, 36, 1)',
+                                    'rgba(249, 115, 22, 1)',
+                                    'rgba(234, 88, 12, 1)',
+                                    'rgba(20, 184, 166, 1)',
+                                    'rgba(99, 102, 241, 1)',
+                                    'rgba(16, 185, 129, 1)',
+                                    'rgba(124, 58, 237, 1)'
+                                ],
+                                borderWidth: 1,
+                                hoverOffset: 8
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: {
+                                    position: 'bottom',
+                                    labels: {
+                                        font: {
+                                            family: 'Inter',
+                                            size: 14
+                                        }
+                                    }
+                                },
+                                tooltip: {
+                                    callbacks: {
+                                        label: function(context) {
+                                            let label = context.label || '';
+                                            if (label) {
+                                                label += ': ';
+                                            }
+                                            if (context.parsed !== null) {
+                                                label += new Intl.NumberFormat('en-US', { style: 'currency', currency: 'ZMW' }).format(context.parsed);
+                                            }
+                                            return label;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+            }, [carLogs]);
+
+            return (
+                <section id="chart-section" className="mt-8 bg-white p-6 rounded-xl shadow-md border border-stone-200">
+                    <h2 className="text-2xl font-bold mb-2 text-center text-stone-700">Revenue Breakdown</h2>
+                    <p className="text-stone-500 text-center mb-6">This chart visualizes the sources of your revenue, helping you understand which services are most profitable.</p>
+                    <div className="chart-container">
+                        <canvas ref={chartRef} id="revenueChart"></canvas>
+                    </div>
+                </section>
+            );
+        }
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
